@@ -93,6 +93,19 @@ def run_once(
         store.record_run_end(conn, run_id, "paused", log_buf.getvalue())
         return 0
 
+    if not manual_trigger:
+        interval = store.get_digest_interval_days(conn)
+        last_day = store.get_last_sent_date(conn)
+        if interval > 1 and last_day:
+            days_since = (today - date.fromisoformat(last_day)).days
+            if days_since < interval:
+                log.info(
+                    f"interval not elapsed — last sent {last_day} ({days_since}d ago), "
+                    f"interval {interval}d; skipping"
+                )
+                store.record_run_end(conn, run_id, "interval-skip", log_buf.getvalue())
+                return 0
+
     try:
         reader = Reader(cfg.reader_token)
         try:

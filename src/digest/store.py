@@ -79,6 +79,7 @@ def _seed_settings(conn: sqlite3.Connection) -> None:
     rows = (
         ("paused", "false"),
         ("word_budget", initial_word_budget),
+        ("digest_interval_days", "1"),
     )
     for k, v in rows:
         conn.execute(
@@ -181,6 +182,26 @@ def get_word_budget(conn: sqlite3.Connection) -> int:
     except ValueError:
         log.warning(f"WORD_BUDGET env var is unparseable: {env_raw!r}; defaulting to 5000")
         return 5000
+
+
+def get_digest_interval_days(conn: sqlite3.Connection) -> int:
+    raw = get_setting(conn, "digest_interval_days")
+    if raw is not None:
+        try:
+            n = int(raw)
+            if 1 <= n < 100:
+                return n
+        except ValueError:
+            pass
+    return 1
+
+
+def get_last_sent_date(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        "SELECT DATE(sent_at) FROM digests WHERE status = 'sent' "
+        "ORDER BY sent_at DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
 
 
 def build_epub_path(data_dir: Path, sent_at: str, volume: int) -> Path:

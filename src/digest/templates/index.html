@@ -192,6 +192,18 @@
     {% endif %}
   </form>
   <p class="hint">Soft cap; the digest stops after the article that pushes the total above this number.</p>
+  <form method="post" action="/digest-interval" class="settings-form">
+    <label for="interval-value">Send every</label>
+    <input type="number" id="interval-value" name="value" value="{{ digest_interval }}" min="{{ interval_min }}" max="{{ interval_max }}" required>
+    <span>day{{ 's' if digest_interval != 1 else '' }}</span>
+    <button type="submit">Save</button>
+    {% if interval_flash == "ok" %}
+      <span class="flash-inline flash-info">saved</span>
+    {% elif interval_flash == "invalid" %}
+      <span class="flash-inline flash-warn">invalid (must be {{ interval_min }}–{{ interval_max }})</span>
+    {% endif %}
+  </form>
+  <p class="hint">Scheduled runs skip until this many days have passed since the last sent digest. Pause and Trigger still work.</p>
 </section>
 
 <script id="chart-data" type="application/json">{{ chart_data|tojson }}</script>

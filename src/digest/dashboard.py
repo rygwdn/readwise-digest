@@ -22,6 +22,8 @@ QUEUE_TTL_OK = 60
 QUEUE_TTL_ERR = 30
 WB_MIN = 500
 WB_MAX = 50000
+INTERVAL_MIN = 1
+INTERVAL_MAX = 99
 
 _queue_cache: dict = {"data": None, "expires": 0.0, "error": None}
 
@@ -177,6 +179,7 @@ def dashboard(request: Request):
 
         paused = store.get_setting(conn, "paused") == "true"
         word_budget = store.get_word_budget(conn)
+        digest_interval = store.get_digest_interval_days(conn)
         queue_stats, queue_error = _get_queue_stats(cfg, conn)
         chart = _chart_data(conn)
         books = library.list_books(conn)
@@ -203,8 +206,11 @@ def dashboard(request: Request):
             "totals": totals, "digests": digests, "runs": runs, "articles": articles,
             "chart_data": chart, "word_budget": word_budget,
             "wb_min": WB_MIN, "wb_max": WB_MAX,
+            "digest_interval": digest_interval,
+            "interval_min": INTERVAL_MIN, "interval_max": INTERVAL_MAX,
             "triggered": request.query_params.get("triggered"),
             "budget_flash": request.query_params.get("budget"),
+            "interval_flash": request.query_params.get("interval"),
             "is_running": is_running.locked(),
             "books": books,
             "opds_url": _opds_url(cfg, request),
@@ -286,6 +292,24 @@ def word_budget(request: Request, value: str = Form(...)) -> RedirectResponse:
     finally:
         conn.close()
     return RedirectResponse(url="/?budget=ok", status_code=303)
+
+
+@router.post("/digest-interval")
+def digest_interval(request: Request, value: str = Form(...)) -> RedirectResponse:
+    try:
+        n = int(value.strip())
+    except (ValueError, AttributeError):
+        return RedirectResponse(url="/?interval=invalid", status_code=303)
+    if n < INTERVAL_MIN or n > INTERVAL_MAX:
+        return RedirectResponse(url="/?interval=invalid", status_code=303)
+    cfg = request.app.state.cfg
+    conn = store.connect(cfg.data_dir)
+    try:
+        store.set_setting(conn, "digest_interval_days", str(n))
+        log.info(f"digest_interval_days updated to {n}")
+    finally:
+        conn.close()
+    return RedirectResponse(url="/?interval=ok", status_code=303)
 
 
 def _upload_size(upload: UploadFile) -> int:

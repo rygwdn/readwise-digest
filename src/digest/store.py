@@ -57,6 +57,7 @@ ADDITIVE_ALTERS = (
     "ALTER TABLE digests ADD COLUMN volume INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE digests ADD COLUMN total_words INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sent_articles ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE library_books ADD COLUMN readwise_id TEXT",
 )
 
 
@@ -100,6 +101,12 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     _apply_additive_alters(conn)
     _seed_settings(conn)
     return conn
+
+
+def already_synced_reader_epub_ids(conn: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in conn.execute(
+        "SELECT readwise_id FROM library_books WHERE readwise_id IS NOT NULL"
+    )}
 
 
 def already_sent_ids(conn: sqlite3.Connection) -> set[str]:

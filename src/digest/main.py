@@ -14,7 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from digest import config, epub, mailer, store
+from digest import config, epub, library, mailer, store
 from digest.reader import Reader, tag_names, word_count as reader_word_count
 
 _PKG_DIR = Path(__file__).parent
@@ -71,6 +71,35 @@ def _scaffold(cfg: config.Config) -> None:
     _ensure_placeholder(static / "placeholder-pdf.png", "PDF")
 
 
+def _sync_reader_epubs(
+    cfg: config.Config,
+    conn: sqlite3.Connection,
+    reader: Reader,
+    epub_items: list[dict],
+) -> None:
+    synced = store.already_synced_reader_epub_ids(conn)
+    new_items = [a for a in epub_items if a["id"] not in synced]
+    if not new_items:
+        log.info("reader epub sync: nothing new")
+        return
+    log.info(f"reader epub sync: {len(new_items)} new epub(s) to download")
+    for item in new_items:
+        doc_id = item["id"]
+        raw_url = item.get("raw_source_url")
+        if not raw_url:
+            log.warning(f"epub item missing raw_source_url: {doc_id!r} — skipping")
+            continue
+        try:
+            epub_bytes = reader.download_epub(raw_url)
+            library.store_reader_epub(
+                conn, cfg.data_dir, doc_id, epub_bytes,
+                title=item.get("title"),
+                author=item.get("author"),
+            )
+        except Exception as e:
+            log.warning(f"failed to sync reader epub {doc_id!r} ({item.get('title')!r}): {e}")
+
+
 def run_once(
     cfg: config.Config, *, dry_run: bool = False, manual_trigger: bool = False
 ) -> int:
@@ -110,10 +139,18 @@ def run_once(
         reader = Reader(cfg.reader_token)
         try:
             already = store.already_sent_ids(conn)
-            queue = reader.list_queue(cfg.reader_tag_trigger)
-            log.info(f"reader queue: {len(queue)} articles, {len(already)} previously sent")
+            queue = reader.list_queue()
+            log.info(f"reader queue: {len(queue)} items, {len(already)} previously sent")
 
-            new = [a for a in queue if a["id"] not in already]
+            _sync_reader_epubs(cfg, conn, reader,
+                               [a for a in queue if a.get("category") == "epub"])
+
+            _SKIP_CATEGORIES = {"epub", "video"}
+            new = [a for a in queue if a["id"] not in already
+                   and a.get("category") not in _SKIP_CATEGORIES]
+            for a in queue:
+                if a.get("category") in _SKIP_CATEGORIES and a["id"] not in already:
+                    log.info(f"skipping {a.get('category')} item: {a.get('title')!r}")
             ready = [a for a in new if (a.get("html_content") or a.get("content"))]
             for a in new:
                 if a not in ready:

@@ -157,6 +157,40 @@ def store_upload(
     return book_id
 
 
+def store_reader_epub(
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    doc_id: str,
+    epub_bytes: bytes,
+    title: str | None,
+    author: str | None,
+) -> int:
+    filename = f"readwise-{doc_id}.epub"
+    dest = file_path(data_dir, filename)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(epub_bytes)
+
+    meta = extract_epub_metadata(dest)
+    resolved_title = meta["title"] or title
+    resolved_author = meta["author"] or author
+    language = meta.get("language")
+
+    cur = conn.execute(
+        "INSERT INTO library_books "
+        "(filename, title, author, language, format, size_bytes, has_cover, added_at, readwise_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (filename, resolved_title, resolved_author or "Unknown", language,
+         "epub", len(epub_bytes), 0, _now(), doc_id),
+    )
+    book_id = cur.lastrowid
+
+    if extract_epub_cover(dest, cover_path(data_dir, book_id)):
+        conn.execute("UPDATE library_books SET has_cover = 1 WHERE id = ?", (book_id,))
+
+    log.info(f"reader epub synced: id={book_id} doc_id={doc_id!r} title={resolved_title!r}")
+    return book_id
+
+
 def delete_book(conn: sqlite3.Connection, data_dir: Path, book_id: int) -> bool:
     row = conn.execute(
         "SELECT filename FROM library_books WHERE id = ?", (book_id,)

@@ -20,18 +20,13 @@ class Reader:
     def close(self) -> None:
         self._client.close()
 
-    def list_tagged_articles(self, tag: str) -> Iterator[dict]:
-        """Yields all article-category docs server-side filtered by tag.
-
-        Server-side filter verified working. Client-side filter on `tags`
-        kept as a defensive check in case the server ever stops honoring it.
-        """
+    def list_later(self) -> Iterator[dict]:
         cursor: str | None = None
         while True:
             params: dict[str, str] = {
-                "category": "article",
-                "tag": tag,
+                "location": "later",
                 "withHtmlContent": "true",
+                "withRawSourceUrl": "true",
             }
             if cursor:
                 params["pageCursor"] = cursor
@@ -39,15 +34,18 @@ class Reader:
             r.raise_for_status()
             data = r.json()
             for item in data.get("results", []):
-                if _has_tag(item, tag):
-                    yield item
+                yield item
             cursor = data.get("nextPageCursor")
             if not cursor:
                 break
 
-    def list_queue(self, tag: str) -> list[dict]:
-        """All toepub-tagged articles, fully materialized (queue is small)."""
-        return list(self.list_tagged_articles(tag))
+    def list_queue(self) -> list[dict]:
+        return list(self.list_later())
+
+    def download_epub(self, raw_source_url: str) -> bytes:
+        r = self._client.get(raw_source_url, follow_redirects=True)
+        r.raise_for_status()
+        return r.content
 
     def add_tag(self, doc_id: str, current_tag_names: list[str], new_tag: str) -> None:
         """PATCH replaces the full tag list. Send existing names + new tag."""
@@ -59,17 +57,6 @@ class Reader:
             raise RuntimeError(
                 f"PATCH /update/{doc_id}/ failed: {r.status_code} {r.text[:200]}"
             )
-
-
-def _has_tag(item: dict, tag: str) -> bool:
-    tags = item.get("tags") or {}
-    if isinstance(tags, dict):
-        return tag in tags
-    if isinstance(tags, list):
-        return any(
-            (t.get("name") if isinstance(t, dict) else t) == tag for t in tags
-        )
-    return False
 
 
 def tag_names(item: dict) -> list[str]:

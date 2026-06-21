@@ -43,7 +43,7 @@ class Reader:
         return list(self.list_later())
 
     def download_epub(self, raw_source_url: str) -> bytes:
-        r = self._client.get(raw_source_url, follow_redirects=True)
+        r = httpx.get(raw_source_url, follow_redirects=True, timeout=60.0)
         r.raise_for_status()
         return r.content
 

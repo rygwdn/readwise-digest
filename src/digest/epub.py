@@ -206,7 +206,6 @@ def build_epub(
     book.set_identifier(f"morning-paper-{today.isoformat()}{suffix}")
     book.set_title(f"Paper {today.isoformat()} v{volume}")
     book.set_language("en")
-    book.add_author("Readwise Reader Digest")
 
     cover_bytes = make_cover(today, len(articles), volume=volume)
     book.set_cover("cover.png", cover_bytes)

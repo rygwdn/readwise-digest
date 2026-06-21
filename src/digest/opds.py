@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from digest import epub as epub_module, library, store
-from digest.reader import Reader, word_count as reader_word_count
+from digest.reader import Reader, tag_names, word_count as reader_word_count
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ ACQ_TYPE = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 _IMG_COUNT_RE = re.compile(r"<img\b", re.IGNORECASE)
 _MIN_WORDS = 150
 _MAX_IMGS_PER_100_WORDS = 2.0
+_SKIP_CATEGORIES = {"epub", "video"}
 
 router = APIRouter(prefix="/opds")
 
@@ -72,7 +73,7 @@ def _pending_entry(p: dict, vol_num: int, base: str) -> dict:
     return {
         "id": f"urn:inkbook-digest:pending:{p['id']}",
         "title": f"Paper {p['sent_at'][:10]} v{vol_num}",
-        "author": "Readwise Reader Digest",
+        "author": "",
         "updated": p["sent_at"],
         "published": p["sent_at"],
         "summary": f"{count} article{'s' if count != 1 else ''} queued",
@@ -95,7 +96,7 @@ def _digest_entry(d: dict, base: str) -> dict:
     return {
         "id": f"urn:inkbook-digest:digest:{d['id']}",
         "title": title,
-        "author": "Readwise Reader Digest",
+        "author": "",
         "updated": sent_at,
         "published": sent_at,
         "summary": summary,
@@ -169,9 +170,14 @@ def digests_feed(request: Request) -> Response:
         pending_ids = store.already_pending_ids(conn)
         already_done = sent_ids | pending_ids
 
+        done_tag = cfg.reader_tag_done
         new_eligible = []
         for a in queue:
             if a["id"] in already_done:
+                continue
+            if a.get("category") in _SKIP_CATEGORIES:
+                continue
+            if done_tag in tag_names(a):
                 continue
             ok, reason = is_eligible(a)
             if not ok:
@@ -266,41 +272,50 @@ def file_digest(digest_id: int, request: Request):
     reader = Reader(cfg.reader_token)
     try:
         queue = reader.list_queue()
-    finally:
-        reader.close()
+        articles = [
+            a for a in queue
+            if a["id"] in id_set and (a.get("html_content") or a.get("content"))
+        ]
+        articles.sort(key=lambda a: id_order.get(a["id"], 999))
 
-    articles = [
-        a for a in queue
-        if a["id"] in id_set and (a.get("html_content") or a.get("content"))
-    ]
-    articles.sort(key=lambda a: id_order.get(a["id"], 999))
+        if not articles:
+            return Response("no content available", status_code=404, media_type="text/plain")
 
-    if not articles:
-        return Response("no content available", status_code=404, media_type="text/plain")
+        today = datetime.now(ZoneInfo(cfg.tz)).date()
+        conn = store.connect(cfg.data_dir)
+        try:
+            volume_num = store.get_today_volume_number(conn)
+            (cfg.data_dir / "epubs").mkdir(exist_ok=True)
+            out_path = store.build_epub_path(cfg.data_dir, today.isoformat(), volume_num)
 
-    today = datetime.now(ZoneInfo(cfg.tz)).date()
-    conn = store.connect(cfg.data_dir)
-    try:
-        volume_num = store.get_today_volume_number(conn)
-        (cfg.data_dir / "epubs").mkdir(exist_ok=True)
-        out_path = store.build_epub_path(cfg.data_dir, today.isoformat(), volume_num)
+            epub_module.build_epub(today, articles, out_path, cfg.image_soft_cap_mb, volume=volume_num)
 
-        epub_module.build_epub(today, articles, out_path, cfg.image_soft_cap_mb, volume=volume_num)
+            total_words = sum(reader_word_count(a) for a in articles)
+            store.activate_pending_digest(conn, digest_id, volume_num, total_words)
+            for a in articles:
+                store.record_sent_article(
+                    conn, digest_id, a["id"],
+                    a.get("title"), a.get("source_url") or a.get("url"),
+                    word_count=reader_word_count(a),
+                )
+        finally:
+            conn.close()
 
-        total_words = sum(reader_word_count(a) for a in articles)
-        store.activate_pending_digest(conn, digest_id, volume_num, total_words)
+        tag_errors = []
         for a in articles:
-            store.record_sent_article(
-                conn, digest_id, a["id"],
-                a.get("title"), a.get("source_url") or a.get("url"),
-                word_count=reader_word_count(a),
-            )
+            try:
+                reader.add_tag(a["id"], tag_names(a), cfg.reader_tag_done)
+            except Exception as e:
+                tag_errors.append(a["id"])
+                log.warning(f"failed to add done-tag to {a['id']!r}: {e}")
+
         log.info(
             f"on-demand epub generated: {out_path.name} "
             f"({len(articles)} articles, {total_words} words)"
+            + (f"; {len(tag_errors)} tag error(s)" if tag_errors else "")
         )
     finally:
-        conn.close()
+        reader.close()
 
     return FileResponse(out_path, media_type="application/epub+zip", filename=out_path.name)
 

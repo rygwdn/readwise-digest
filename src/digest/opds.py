@@ -21,11 +21,33 @@ NAV_TYPE = "application/atom+xml;profile=opds-catalog;kind=navigation"
 ACQ_TYPE = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 
 _IMG_COUNT_RE = re.compile(r"<img\b", re.IGNORECASE)
+_ILLEGAL_CHARS = set('/\\:*?"<>|')
 _MIN_WORDS = 150
 _MAX_IMGS_PER_100_WORDS = 2.0
 SKIP_CATEGORIES = {"epub", "video"}
 
 router = APIRouter(prefix="/opds")
+
+
+def _firmware_filename(author: str, title: str) -> str:
+    """Predict the SD card filename the CrossPoint firmware will use for a book entry."""
+    stem = f"{author} - {title}" if author else title
+    sanitized = "".join("_" if c in _ILLEGAL_CHARS else c for c in stem)
+    sanitized = sanitized.lstrip(" .")
+    sanitized = sanitized.rstrip(" .")
+    sanitized = sanitized[:100]
+    return (sanitized or "book") + ".epub"
+
+
+def _source_domain(url: str | None) -> str:
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        netloc = urlparse(url).netloc
+        return netloc.lstrip("www.")
+    except Exception:
+        return ""
 
 
 def _base(cfg, request: Request) -> str:
@@ -123,11 +145,35 @@ def _library_entry(b: dict, base: str) -> dict:
     }
 
 
+def _article_entry(a: dict, base: str) -> dict:
+    wc = a.get("word_count") or 0
+    domain = _source_domain(a.get("source_url") or a.get("url"))
+    summary_parts = [f"{wc:,} words"] + ([domain] if domain else [])
+    return {
+        "id": f"urn:inkbook-digest:article:{a['id']}",
+        "title": a.get("title") or "(untitled)",
+        "author": a.get("author") or "",
+        "updated": a.get("saved_at") or _now_iso(),
+        "published": a.get("saved_at") or _now_iso(),
+        "summary": " · ".join(summary_parts),
+        "language": "en",
+        "cover_url": None,
+        "acquisition_url": f"{base}/opds/article/{a['id']}",
+        "media_type": "application/epub+zip",
+    }
+
+
 @router.get("/")
 def root(request: Request) -> Response:
     cfg = request.app.state.cfg
     base = _base(cfg, request)
     entries = [
+        {
+            "id": "urn:inkbook-digest:catalog:articles",
+            "title": "Articles",
+            "summary": "Individual articles from Readwise Reader — one EPUB per article.",
+            "href": f"{base}/opds/articles/",
+        },
         {
             "id": "urn:inkbook-digest:catalog:digests",
             "title": "Morning Papers",
@@ -339,6 +385,70 @@ def file_library(book_id: int, request: Request):
         return Response("file missing", status_code=404, media_type="text/plain")
     media = "application/epub+zip" if fmt == "epub" else "application/pdf"
     return FileResponse(path, media_type=media, filename=filename)
+
+
+@router.get("/articles/")
+def articles_feed(request: Request) -> Response:
+    cfg = request.app.state.cfg
+    base = _base(cfg, request)
+    reader = Reader(cfg.reader_token)
+    try:
+        queue = reader.list_queue()
+    finally:
+        reader.close()
+
+    eligible = []
+    for a in queue:
+        if a.get("category") in SKIP_CATEGORIES:
+            continue
+        ok, _ = is_eligible(a)
+        if not ok:
+            continue
+        eligible.append(a)
+
+    eligible.sort(key=lambda a: a.get("saved_at") or "", reverse=True)
+
+    entries = [_article_entry(a, base) for a in eligible]
+    body = templates.get_template("opds_acquisition.xml").render(
+        feed_id="urn:inkbook-digest:catalog:articles",
+        feed_title="Articles",
+        updated=_now_iso(),
+        self_url=f"{base}/opds/articles/",
+        root_url=f"{base}/opds/",
+        entries=entries,
+    )
+    return Response(content=body, media_type=ACQ_TYPE)
+
+
+@router.get("/article/{article_id}")
+def file_article(article_id: str, request: Request) -> Response:
+    cfg = request.app.state.cfg
+    reader = Reader(cfg.reader_token)
+    try:
+        queue = reader.list_queue()
+        article = next((a for a in queue if a["id"] == article_id), None)
+    finally:
+        reader.close()
+
+    if article is None:
+        return Response("not found", status_code=404, media_type="text/plain")
+
+    today = datetime.now(ZoneInfo(cfg.tz)).date()
+    tmp_dir = cfg.data_dir / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"article-{article_id}.epub"
+    try:
+        epub_module.build_epub(today, [article], tmp_path, cfg.image_soft_cap_mb, volume=1)
+        epub_bytes = tmp_path.read_bytes()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    fname = _firmware_filename(article.get("author") or "", article.get("title") or "article")
+    return Response(
+        content=epub_bytes,
+        media_type="application/epub+zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/cover/digest/{digest_id}")

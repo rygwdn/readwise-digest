@@ -18,8 +18,8 @@
     <published>{{ e.published }}</published>
     {% if e.summary %}<summary>{{ e.summary }}</summary>{% endif %}
     {% if e.language %}<dc:language>{{ e.language }}</dc:language>{% endif %}
-    <link rel="http://opds-spec.org/image" type="image/jpeg" href="{{ e.cover_url }}"/>
-    <link rel="http://opds-spec.org/image/thumbnail" type="image/jpeg" href="{{ e.cover_url }}"/>
+    {% if e.cover_url %}<link rel="http://opds-spec.org/image" type="image/jpeg" href="{{ e.cover_url }}"/>{% endif %}
+    {% if e.cover_url %}<link rel="http://opds-spec.org/image/thumbnail" type="image/jpeg" href="{{ e.cover_url }}"/>{% endif %}
     <link rel="http://opds-spec.org/acquisition" type="{{ e.media_type }}" href="{{ e.acquisition_url }}"/>
   </entry>
   {% endfor %}

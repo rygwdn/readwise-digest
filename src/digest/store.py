@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sqlite3
@@ -58,6 +59,7 @@ ADDITIVE_ALTERS = (
     "ALTER TABLE digests ADD COLUMN total_words INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sent_articles ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE library_books ADD COLUMN readwise_id TEXT",
+    "ALTER TABLE digests ADD COLUMN article_ids TEXT",
 )
 
 
@@ -101,6 +103,53 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     _apply_additive_alters(conn)
     _seed_settings(conn)
     return conn
+
+
+def create_pending_digest(conn: sqlite3.Connection, article_ids: list[str]) -> int:
+    cur = conn.execute(
+        "INSERT INTO digests (sent_at, article_count, status, volume, total_words, article_ids) "
+        "VALUES (?, ?, 'pending', 0, 0, ?)",
+        (_now(), len(article_ids), json.dumps(article_ids)),
+    )
+    return cur.lastrowid
+
+
+def get_pending_digests(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, sent_at, article_count, article_ids FROM digests "
+        "WHERE status = 'pending' ORDER BY id ASC"
+    ).fetchall()
+    return [
+        {"id": r[0], "sent_at": r[1], "article_count": r[2],
+         "article_ids": json.loads(r[3] or "[]")}
+        for r in rows
+    ]
+
+
+def already_pending_ids(conn: sqlite3.Connection) -> set[str]:
+    ids: set[str] = set()
+    for row in conn.execute("SELECT article_ids FROM digests WHERE status = 'pending'"):
+        ids.update(json.loads(row[0] or "[]"))
+    return ids
+
+
+def prune_stale_pending(conn: sqlite3.Connection, days: int = 3) -> int:
+    result = conn.execute(
+        "DELETE FROM digests WHERE status = 'pending' AND sent_at < datetime('now', ?)",
+        (f"-{days} days",),
+    )
+    return result.rowcount
+
+
+def activate_pending_digest(
+    conn: sqlite3.Connection, digest_id: int, volume: int, total_words: int
+) -> str:
+    now = _now()
+    conn.execute(
+        "UPDATE digests SET status = 'sent', sent_at = ?, volume = ?, total_words = ? WHERE id = ?",
+        (now, volume, total_words, digest_id),
+    )
+    return now
 
 
 def already_synced_reader_epub_ids(conn: sqlite3.Connection) -> set[str]:

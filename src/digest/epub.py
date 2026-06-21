@@ -16,14 +16,17 @@ log = logging.getLogger(__name__)
 CSS = """
 body { font-family: serif; line-height: 1.5; text-align: justify; margin: 1em; }
 h1 { font-size: 1.5em; margin-top: 1em; }
-p.meta { color: #666; font-size: 0.9em; font-style: italic; margin-bottom: 0.5em; }
-a.source { color: #444; font-size: 0.85em; word-break: break-all; }
+p.meta { font-size: 0.9em; font-style: italic; margin-bottom: 0.5em; }
+p.source { font-size: 0.85em; word-break: break-all; }
 img { max-width: 100%; height: auto; }
-blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #555; }
+blockquote { border-left: 3px solid black; margin-left: 0; padding-left: 1em; }
 pre, code { font-family: monospace; font-size: 0.9em; }
+ol.toc { padding-left: 1.2em; }
+ol.toc li { margin-bottom: 0.8em; }
 """.strip()
 
 _IMG_TAG_RE = re.compile(r'<img\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+_LINK_RE = re.compile(r'<a\b[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 
 
 def _source_domain(url: str | None) -> str:
@@ -39,8 +42,12 @@ def _safe_text(value) -> str:
     return str(value) if value else ""
 
 
+def _strip_links(html: str) -> str:
+    return _LINK_RE.sub(r'\1', html)
+
+
 def make_cover(today: date, article_count: int, volume: int = 1) -> bytes:
-    img = Image.new("RGB", (600, 900), "white")
+    img = Image.new("L", (600, 900), 255)
     draw = ImageDraw.Draw(img)
     try:
         title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 56)
@@ -48,13 +55,13 @@ def make_cover(today: date, article_count: int, volume: int = 1) -> bytes:
     except OSError:
         title_font = ImageFont.load_default()
         meta_font = ImageFont.load_default()
-    draw.text((50, 220), "Morning Paper", fill="black", font=title_font)
+    draw.text((50, 220), "Morning Paper", fill=0, font=title_font)
     date_label = today.isoformat() if volume == 1 else f"{today.isoformat()} (Vol. {volume})"
-    draw.text((50, 320), date_label, fill="black", font=meta_font)
+    draw.text((50, 320), date_label, fill=0, font=meta_font)
     draw.text(
         (50, 380),
         f"{article_count} article{'s' if article_count != 1 else ''}",
-        fill="#444",
+        fill=64,
         font=meta_font,
     )
     out = io.BytesIO()
@@ -74,6 +81,21 @@ def _fetch_image(client: httpx.Client, url: str) -> tuple[bytes, str] | None:
     return r.content, ext
 
 
+def _to_eink_image(content: bytes, ext: str) -> tuple[bytes, str]:
+    try:
+        img = Image.open(io.BytesIO(content))
+        img = img.convert("L")
+        w, h = img.size
+        if w > 600:
+            img = img.resize((600, int(h * 600 / w)), Image.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=70)
+        return out.getvalue(), ".jpeg"
+    except Exception as e:
+        log.warning(f"e-ink image convert failed: {e}")
+        return content, ext
+
+
 def _process_article_html(
     client: httpx.Client,
     book: epub.EpubBook,
@@ -81,7 +103,7 @@ def _process_article_html(
     base_url: str | None,
     article_id: str,
 ) -> tuple[str, int]:
-    """Replace <img> srcs with internal refs, embed images. Returns (new_html, total_bytes)."""
+    """Replace <img> srcs with grayscale internal refs. Returns (new_html, total_bytes)."""
     cache: dict[str, str] = {}
     total_bytes = 0
 
@@ -98,7 +120,7 @@ def _process_article_html(
         fetched = _fetch_image(client, absolute)
         if fetched is None:
             return whole
-        content, ext = fetched
+        content, ext = _to_eink_image(*fetched)
         digest = hashlib.sha1(absolute.encode()).hexdigest()[:12]
         internal = f"images/{article_id}_{digest}{ext}"
         item = epub.EpubImage(
@@ -114,6 +136,30 @@ def _process_article_html(
 
     new_html = _IMG_TAG_RE.sub(repl, html or "")
     return new_html, total_bytes
+
+
+def _build_toc_chapter(articles: list[dict], style: epub.EpubItem) -> epub.EpubHtml:
+    rows = []
+    for i, article in enumerate(articles):
+        title = _safe_text(article.get("title")) or "(untitled)"
+        author = _safe_text(article.get("author"))
+        wc = article.get("word_count")
+        meta = " · ".join(b for b in (author, f"{wc} words" if wc else "") if b)
+        rows.append(
+            f'<li><a href="chap_{i}.xhtml">{_html_escape(title)}</a>'
+            + (f"<br/><small>{_html_escape(meta)}</small>" if meta else "")
+            + "</li>"
+        )
+    chap = epub.EpubHtml(uid="toc", title="Contents", file_name="toc.xhtml", lang="en")
+    chap.content = (
+        "<html><head><title>Contents</title>"
+        '<link rel="stylesheet" href="style/style.css" type="text/css"/></head>'
+        '<body><h1>Contents</h1><ol class="toc">'
+        + "\n".join(rows)
+        + "</ol></body></html>"
+    )
+    chap.add_item(style)
+    return chap
 
 
 def _build_chapter_xhtml(item: dict, body_html: str) -> str:
@@ -134,8 +180,8 @@ def _build_chapter_xhtml(item: dict, body_html: str) -> str:
         f"<body>"
         f"<h1>{_html_escape(title)}</h1>"
         f'<p class="meta">{_html_escape(meta)}</p>'
-        f'<p><a class="source" href="{_html_escape(source_url)}">{_html_escape(source_url)}</a></p>'
-        f"{body_html}"
+        f'<p class="source">{_html_escape(source_url)}</p>'
+        f"{_strip_links(body_html)}"
         f"</body></html>"
     )
 
@@ -173,6 +219,9 @@ def build_epub(
     )
     book.add_item(style)
 
+    toc_chap = _build_toc_chapter(articles, style)
+    book.add_item(toc_chap)
+
     chapters: list[epub.EpubHtml] = []
     soft_cap_bytes = image_soft_cap_mb * 1024 * 1024
 
@@ -206,6 +255,6 @@ def build_epub(
     book.toc = tuple(chapters)
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    book.spine = ["nav", *chapters]
+    book.spine = [toc_chap, *chapters]
 
     epub.write_epub(str(out_path), book)

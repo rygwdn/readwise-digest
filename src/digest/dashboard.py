@@ -4,11 +4,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from digest import library, store
+from digest.opds import is_eligible
 from digest.reader import Reader, word_count as reader_word_count
 
 log = logging.getLogger(__name__)
@@ -89,13 +90,13 @@ def _get_queue_stats(cfg, conn) -> tuple[dict | None, str | None]:
     try:
         reader = Reader(cfg.reader_token)
         try:
-            articles = reader.list_queue(cfg.reader_tag_trigger)
+            articles = reader.list_queue()
         finally:
             reader.close()
-        already = store.already_sent_ids(conn)
-        pending = [a for a in articles if a["id"] not in already]
-        total_words = sum(reader_word_count(a) for a in pending)
-        stats = {"count": len(pending), "total_words": total_words}
+        already = store.already_sent_ids(conn) | store.already_pending_ids(conn)
+        eligible = [a for a in articles if a["id"] not in already and is_eligible(a)[0]]
+        total_words = sum(reader_word_count(a) for a in eligible)
+        stats = {"count": len(eligible), "total_words": total_words}
         _queue_cache.update(data=stats, error=None, expires=now + QUEUE_TTL_OK)
         return stats, None
     except Exception as e:
@@ -124,7 +125,6 @@ def _chart_data(conn) -> list[dict]:
 def dashboard(request: Request):
     cfg = request.app.state.cfg
     scheduler = request.app.state.scheduler
-    is_running = request.app.state.is_running
 
     conn = store.connect(cfg.data_dir)
     try:
@@ -187,10 +187,9 @@ def dashboard(request: Request):
         conn.close()
 
     next_run = None
-    if not paused:
-        job = scheduler.get_job("daily-digest")
-        if job and job.next_run_time:
-            next_run = job.next_run_time.isoformat()
+    job = scheduler.get_job("epub-sync")
+    if job and job.next_run_time:
+        next_run = job.next_run_time.isoformat()
 
     upload_flashes = _upload_flashes(request)
     delete_flash = (
@@ -211,7 +210,7 @@ def dashboard(request: Request):
             "triggered": request.query_params.get("triggered"),
             "budget_flash": request.query_params.get("budget"),
             "interval_flash": request.query_params.get("interval"),
-            "is_running": is_running.locked(),
+            "is_running": False,
             "books": books,
             "opds_url": _opds_url(cfg, request),
             "upload_flashes": upload_flashes,
@@ -252,13 +251,16 @@ def run_log(run_id: int, request: Request):
 
 
 @router.post("/trigger")
-def trigger(bg: BackgroundTasks, request: Request) -> RedirectResponse:
-    is_running = request.app.state.is_running
-    if is_running.locked():
-        return RedirectResponse(url="/?triggered=already_running", status_code=303)
+def trigger(request: Request) -> RedirectResponse:
     cfg = request.app.state.cfg
-    run_with_lock = request.app.state.run_with_lock
-    bg.add_task(run_with_lock, cfg, manual_trigger=True)
+    conn = store.connect(cfg.data_dir)
+    try:
+        pruned = conn.execute(
+            "DELETE FROM digests WHERE status = 'pending'"
+        ).rowcount
+        log.info(f"trigger: cleared {pruned} pending digest(s); will regenerate on next feed poll")
+    finally:
+        conn.close()
     return RedirectResponse(url="/?triggered=ok", status_code=303)
 
 

@@ -71,7 +71,7 @@ def _pending_entry(p: dict, vol_num: int, base: str) -> dict:
     count = p["article_count"]
     return {
         "id": f"urn:inkbook-digest:pending:{p['id']}",
-        "title": f"Morning Paper (Vol. {vol_num})",
+        "title": f"Paper {p['sent_at'][:10]} v{vol_num}",
         "author": "Readwise Reader Digest",
         "updated": p["sent_at"],
         "published": p["sent_at"],
@@ -87,7 +87,7 @@ def _digest_entry(d: dict, base: str) -> dict:
     sent_at = d["sent_at"]
     day = sent_at[:10]
     vol = d["volume"]
-    title = f"Morning Paper {day}" + (f" (Vol. {vol})" if vol > 1 else "")
+    title = f"Paper {day} v{vol}"
     summary = (
         f"{d['article_count']} article" + ("s" if d["article_count"] != 1 else "")
         + f", {d['total_words']:,} words"

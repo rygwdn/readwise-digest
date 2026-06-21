@@ -55,9 +55,7 @@ def make_cover(today: date, article_count: int, volume: int = 1) -> bytes:
     except OSError:
         title_font = ImageFont.load_default()
         meta_font = ImageFont.load_default()
-    draw.text((50, 220), "Morning Paper", fill=0, font=title_font)
-    date_label = today.isoformat() if volume == 1 else f"{today.isoformat()} (Vol. {volume})"
-    draw.text((50, 320), date_label, fill=0, font=meta_font)
+    draw.text((50, 220), f"Paper {today.isoformat()} v{volume}", fill=0, font=title_font)
     draw.text(
         (50, 380),
         f"{article_count} article{'s' if article_count != 1 else ''}",
@@ -206,7 +204,7 @@ def build_epub(
     suffix = "" if volume == 1 else f"-vol-{volume}"
     title_suffix = "" if volume == 1 else f" (Vol. {volume})"
     book.set_identifier(f"morning-paper-{today.isoformat()}{suffix}")
-    book.set_title(f"Morning Paper {today.isoformat()}{title_suffix}")
+    book.set_title(f"Paper {today.isoformat()} v{volume}")
     book.set_language("en")
     book.add_author("Readwise Reader Digest")
 

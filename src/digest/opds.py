@@ -1,6 +1,5 @@
 import json
 import logging
-import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +23,7 @@ ACQ_TYPE = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 _IMG_COUNT_RE = re.compile(r"<img\b", re.IGNORECASE)
 _MIN_WORDS = 150
 _MAX_IMGS_PER_100_WORDS = 2.0
-_SKIP_CATEGORIES = {"epub", "video"}
+SKIP_CATEGORIES = {"epub", "video"}
 
 router = APIRouter(prefix="/opds")
 
@@ -158,8 +157,6 @@ def digests_feed(request: Request) -> Response:
     base = _base(cfg, request)
     conn = store.connect(cfg.data_dir)
     try:
-        store.prune_stale_pending(conn)
-
         reader = Reader(cfg.reader_token)
         try:
             queue = reader.list_queue()
@@ -167,15 +164,13 @@ def digests_feed(request: Request) -> Response:
             reader.close()
 
         sent_ids = store.already_sent_ids(conn)
-        pending_ids = store.already_pending_ids(conn)
-        already_done = sent_ids | pending_ids
-
         done_tag = cfg.reader_tag_done
-        new_eligible = []
+
+        eligible = []
         for a in queue:
-            if a["id"] in already_done:
+            if a["id"] in sent_ids:
                 continue
-            if a.get("category") in _SKIP_CATEGORIES:
+            if a.get("category") in SKIP_CATEGORIES:
                 continue
             if done_tag in tag_names(a):
                 continue
@@ -183,13 +178,19 @@ def digests_feed(request: Request) -> Response:
             if not ok:
                 log.info(f"filtered from queue: {a.get('title')!r}: {reason}")
                 continue
-            new_eligible.append(a)
+            eligible.append(a)
 
-        if new_eligible:
-            random.shuffle(new_eligible)
-            budget = store.get_word_budget(conn)
-            for vol_articles in _partition_into_volumes(new_eligible, budget):
-                store.create_pending_digest(conn, [a["id"] for a in vol_articles])
+        eligible.sort(key=lambda a: a.get("saved_at") or "")
+
+        conn.execute("DELETE FROM digests WHERE status = 'pending'")
+
+        budget = store.get_word_budget(conn)
+        feed_mode = store.get_feed_mode(conn)
+        volumes = _partition_into_volumes(eligible, budget)
+        if feed_mode == "single":
+            volumes = volumes[:1]
+        for vol_articles in volumes:
+            store.create_pending_digest(conn, [a["id"] for a in vol_articles])
 
         pending = store.get_pending_digests(conn)
         rows = conn.execute(

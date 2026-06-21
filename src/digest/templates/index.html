@@ -24,9 +24,7 @@
 
 <div id="flashes">
 {% if triggered == "ok" %}
-  <div class="flash flash-info">Run started — check the runs table in a few seconds.</div>
-{% elif triggered == "already_running" %}
-  <div class="flash flash-warn">A run is already in progress.</div>
+  <div class="flash flash-info">Pending volumes cleared — will regenerate on next feed poll.</div>
 {% endif %}
 {% for f in upload_flashes %}
   {% if f.kind == "ok" %}
@@ -204,6 +202,14 @@
     {% endif %}
   </form>
   <p class="hint">Scheduled runs skip until this many days have passed since the last sent digest. Pause and Trigger still work.</p>
+  <form method="post" action="/feed-mode" class="settings-form">
+    <label>Feed mode</label>
+    <label style="font-weight:normal"><input type="radio" name="value" value="multi" {% if feed_mode == 'multi' %}checked{% endif %}> Multi-volume</label>
+    <label style="font-weight:normal"><input type="radio" name="value" value="single" {% if feed_mode == 'single' %}checked{% endif %}> Single volume</label>
+    <button type="submit">Save</button>
+    {% if feed_mode_flash == "ok" %}<span class="flash-inline flash-info">saved</span>{% endif %}
+  </form>
+  <p class="hint">Multi: all eligible articles split into volumes by word budget. Single: only the next batch is shown in the feed.</p>
 </section>
 
 <script id="chart-data" type="application/json">{{ chart_data|tojson }}</script>

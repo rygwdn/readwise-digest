@@ -83,6 +83,7 @@ def _seed_settings(conn: sqlite3.Connection) -> None:
         ("paused", "false"),
         ("word_budget", initial_word_budget),
         ("digest_interval_days", "1"),
+        ("feed_mode", "multi"),
     )
     for k, v in rows:
         conn.execute(
@@ -238,6 +239,10 @@ def get_word_budget(conn: sqlite3.Connection) -> int:
     except ValueError:
         log.warning(f"WORD_BUDGET env var is unparseable: {env_raw!r}; defaulting to 5000")
         return 5000
+
+
+def get_feed_mode(conn: sqlite3.Connection) -> str:
+    return get_setting(conn, "feed_mode") or "multi"
 
 
 def get_digest_interval_days(conn: sqlite3.Connection) -> int:

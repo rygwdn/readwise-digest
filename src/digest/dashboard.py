@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.templating import Jinja2Templates
 
 from digest import library, store
-from digest.opds import is_eligible
-from digest.reader import Reader, word_count as reader_word_count
+from digest.opds import SKIP_CATEGORIES, is_eligible
+from digest.reader import Reader, tag_names, word_count as reader_word_count
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +93,15 @@ def _get_queue_stats(cfg, conn) -> tuple[dict | None, str | None]:
             articles = reader.list_queue()
         finally:
             reader.close()
-        already = store.already_sent_ids(conn) | store.already_pending_ids(conn)
-        eligible = [a for a in articles if a["id"] not in already and is_eligible(a)[0]]
+        sent = store.already_sent_ids(conn)
+        done_tag = cfg.reader_tag_done
+        eligible = [
+            a for a in articles
+            if a["id"] not in sent
+            and a.get("category") not in SKIP_CATEGORIES
+            and done_tag not in tag_names(a)
+            and is_eligible(a)[0]
+        ]
         total_words = sum(reader_word_count(a) for a in eligible)
         stats = {"count": len(eligible), "total_words": total_words}
         _queue_cache.update(data=stats, error=None, expires=now + QUEUE_TTL_OK)
@@ -180,6 +187,7 @@ def dashboard(request: Request):
         paused = store.get_setting(conn, "paused") == "true"
         word_budget = store.get_word_budget(conn)
         digest_interval = store.get_digest_interval_days(conn)
+        feed_mode = store.get_feed_mode(conn)
         queue_stats, queue_error = _get_queue_stats(cfg, conn)
         chart = _chart_data(conn)
         books = library.list_books(conn)
@@ -211,6 +219,8 @@ def dashboard(request: Request):
             "budget_flash": request.query_params.get("budget"),
             "interval_flash": request.query_params.get("interval"),
             "is_running": False,
+            "feed_mode": feed_mode,
+            "feed_mode_flash": request.query_params.get("feed_mode"),
             "books": books,
             "opds_url": _opds_url(cfg, request),
             "upload_flashes": upload_flashes,
@@ -294,6 +304,20 @@ def word_budget(request: Request, value: str = Form(...)) -> RedirectResponse:
     finally:
         conn.close()
     return RedirectResponse(url="/?budget=ok", status_code=303)
+
+
+@router.post("/feed-mode")
+def feed_mode_update(request: Request, value: str = Form(...)) -> RedirectResponse:
+    if value not in ("single", "multi"):
+        return RedirectResponse(url="/?feed_mode=invalid", status_code=303)
+    cfg = request.app.state.cfg
+    conn = store.connect(cfg.data_dir)
+    try:
+        store.set_setting(conn, "feed_mode", value)
+        log.info(f"feed_mode updated to {value!r}")
+    finally:
+        conn.close()
+    return RedirectResponse(url="/?feed_mode=ok", status_code=303)
 
 
 @router.post("/digest-interval")

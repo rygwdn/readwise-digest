@@ -19,6 +19,7 @@ h1 { font-size: 1.5em; margin-top: 1em; }
 p.meta { font-size: 0.9em; font-style: italic; margin-bottom: 0.5em; }
 p.source { font-size: 0.85em; word-break: break-all; }
 img { max-width: 100%; height: auto; }
+figcaption { margin-left: 2em; font-style: italic; font-size: 0.9em; }
 blockquote { border-left: 3px solid black; margin-left: 0; padding-left: 1em; }
 pre, code { font-family: monospace; font-size: 0.9em; }
 ol.toc { padding-left: 1.2em; }
@@ -46,22 +47,79 @@ def _strip_links(html: str) -> str:
     return _LINK_RE.sub(r'\1', html)
 
 
-def make_cover(today: date, article_count: int, volume: int = 1) -> bytes:
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if draw.textlength(candidate, font=font) <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def make_cover(today: date, article_count: int, volume: int = 1, article: dict | None = None) -> bytes:
     img = Image.new("L", (600, 900), 255)
     draw = ImageDraw.Draw(img)
     try:
+        bold_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 48)
         title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 56)
         meta_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 32)
+        small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 26)
     except OSError:
+        bold_font = ImageFont.load_default()
         title_font = ImageFont.load_default()
         meta_font = ImageFont.load_default()
-    draw.text((50, 220), f"Paper {today.isoformat()} v{volume}", fill=0, font=title_font)
-    draw.text(
-        (50, 380),
-        f"{article_count} article{'s' if article_count != 1 else ''}",
-        fill=64,
-        font=meta_font,
-    )
+        small_font = ImageFont.load_default()
+
+    margin = 50
+    max_w = 600 - 2 * margin
+
+    if article is not None:
+        # Article-specific cover
+        title = _safe_text(article.get("title")) or "(untitled)"
+        author = _safe_text(article.get("author"))
+        domain = _source_domain(article.get("source_url") or article.get("url"))
+
+        # Draw a thin rule at top
+        draw.rectangle([(margin, 60), (600 - margin, 63)], fill=0)
+
+        # Title (large, wrapped)
+        y = 100
+        for line in _wrap_text(draw, title, bold_font, max_w):
+            draw.text((margin, y), line, fill=0, font=bold_font)
+            y += 58
+
+        # Rule between title and meta
+        y += 16
+        draw.rectangle([(margin, y), (600 - margin, y + 2)], fill=0)
+        y += 24
+
+        if author:
+            draw.text((margin, y), author, fill=40, font=meta_font)
+            y += 44
+        if domain:
+            draw.text((margin, y), domain, fill=80, font=small_font)
+            y += 36
+
+        # Date at bottom
+        draw.text((margin, 820), today.isoformat(), fill=120, font=small_font)
+    else:
+        # Digest cover
+        draw.text((margin, 220), f"Paper {today.isoformat()} v{volume}", fill=0, font=title_font)
+        draw.text(
+            (margin, 380),
+            f"{article_count} article{'s' if article_count != 1 else ''}",
+            fill=64,
+            font=meta_font,
+        )
+
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
@@ -207,7 +265,8 @@ def build_epub(
     book.set_title(f"Paper {today.isoformat()} v{volume}")
     book.set_language("en")
 
-    cover_bytes = make_cover(today, len(articles), volume=volume)
+    single = len(articles) == 1
+    cover_bytes = make_cover(today, len(articles), volume=volume, article=articles[0] if single else None)
     book.set_cover("cover.png", cover_bytes)
 
     style = epub.EpubItem(
@@ -216,8 +275,9 @@ def build_epub(
     )
     book.add_item(style)
 
-    toc_chap = _build_toc_chapter(articles, style)
-    book.add_item(toc_chap)
+    toc_chap = None if single else _build_toc_chapter(articles, style)
+    if toc_chap is not None:
+        book.add_item(toc_chap)
 
     chapters: list[epub.EpubHtml] = []
     soft_cap_bytes = image_soft_cap_mb * 1024 * 1024
@@ -252,6 +312,6 @@ def build_epub(
     book.toc = tuple(chapters)
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    book.spine = [toc_chap, *chapters]
+    book.spine = ([toc_chap] if toc_chap is not None else []) + chapters
 
     epub.write_epub(str(out_path), book)

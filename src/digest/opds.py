@@ -3,6 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
@@ -447,7 +448,7 @@ def file_article(article_id: str, request: Request) -> Response:
     return Response(
         content=epub_bytes,
         media_type="application/epub+zip",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
     )
 
 

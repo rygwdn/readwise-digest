@@ -1,9 +1,9 @@
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
@@ -23,6 +23,7 @@ ACQ_TYPE = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 
 _IMG_COUNT_RE = re.compile(r"<img\b", re.IGNORECASE)
 _ILLEGAL_CHARS = set('/\\:*?"<>|')
+_UNICODE_REPLACEMENTS = str.maketrans({"–": "-", "—": "-", "‘": "'", "’": "'", "“": "", "”": ""})
 _MIN_WORDS = 150
 _MAX_IMGS_PER_100_WORDS = 2.0
 SKIP_CATEGORIES = {"epub", "video"}
@@ -33,6 +34,8 @@ router = APIRouter(prefix="/opds")
 def _firmware_filename(author: str, title: str) -> str:
     """Predict the SD card filename the CrossPoint firmware will use for a book entry."""
     stem = f"{author} - {title}" if author else title
+    stem = stem.translate(_UNICODE_REPLACEMENTS)
+    stem = unicodedata.normalize("NFKD", stem).encode("ascii", errors="ignore").decode("ascii")
     sanitized = "".join("_" if c in _ILLEGAL_CHARS else c for c in stem)
     sanitized = sanitized.lstrip(" .")
     sanitized = sanitized.rstrip(" .")
@@ -448,7 +451,7 @@ def file_article(article_id: str, request: Request) -> Response:
     return Response(
         content=epub_bytes,
         media_type="application/epub+zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 
 
